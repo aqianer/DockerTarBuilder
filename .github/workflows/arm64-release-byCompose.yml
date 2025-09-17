@@ -71,7 +71,7 @@ jobs:
           images=$(yq -r '
             .services | to_entries[] | select(.value.image != null) |
             .value.image | select(test("^[a-zA-Z0-9._-]+[/][a-zA-Z0-9._-]+[/]?[a-zA-Z0-9._-]*[:][a-zA-Z0-9._-]+$")) |
-            . as $img | 
+            . as $img |
             # 去除可能的 ${VAR:default} 格式（如 env 变量）
             if $img | test("\\$\\{.*\\}") then
               empty
@@ -150,9 +150,8 @@ jobs:
       - name: Upload Docker images as release assets
         uses: actions/upload-release-asset@v1
         with:
-          upload_url: ${{ steps.create_release.outputs.upload_url }}
-          asset_path: ${{ github.workspace }}/*.tar.gz
-          asset_name: ${{ github.event.inputs.compose_file_path }}-amd64.tar.gz
-          asset_content_type: application/gzip
+          tag_name: DockerTarBuilder-AMD64
+          files: ${{ github.workspace }}/*.tar.gz
+          token: ${{ secrets.GITHUB_TOKEN }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
