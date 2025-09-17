@@ -1,0 +1,96 @@
+name: Get-AMD64-Docker-Images-Compose-Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      compose_file_path:
+        description: '请输入 docker-compose.yml 的路径（如：docker-compose.yml）'
+        required: true
+        default: 'docker-compose.yml'
+
+jobs:
+  pull_and_package:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install yq for YAML parsing
+        run: |
+          sudo apt-get update && sudo apt-get install -y curl jq
+          curl -sSLo /usr/local/bin/yq https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64
+          chmod +x /usr/local/bin/yq
+
+      - name: Parse docker-compose.yml for images
+        run: |
+          COMPOSE_FILE="${{ github.event.inputs.compose_file_path }}"
+          if [ ! -f "$COMPOSE_FILE" ]; then
+            echo "❌ Error: $COMPOSE_FILE not found!"
+            exit 1
+          fi
+
+          echo "🔍 Parsing images from $COMPOSE_FILE..."
+          images=$(yq -r '.services | to_entries[] | select(.value.image != null) | .value.image' "$COMPOSE_FILE" | sort -u)
+
+          if [ -z "$images" ]; then
+            echo "⚠️ No images found in $COMPOSE_FILE"
+            exit 0
+          fi
+
+          echo "DOCKER_IMAGES=$images" >> $GITHUB_ENV
+          echo "📦 Found images:"
+          echo "$images" | tr ' ' '\n'
+
+      - name: Pull Docker Images and Package (AMD64)
+        run: |
+          images="${DOCKER_IMAGES}"
+          IFS=',' read -r -a image_array <<< "$images"
+
+          for image in "${image_array[@]}"; do
+            echo "📥 Pulling $image for linux/amd64..."
+            docker pull "${image}" --platform "linux/amd64"
+            if [ $? -ne 0 ]; then
+              echo "⚠️ Failed to pull $image. Skipping..."
+              continue
+            fi
+
+            image_name="${image//\//_}"
+            image_name="${image_name//:/_}"
+            tar_file="${image_name}-amd64.tar"
+            gz_file="${tar_file}.gz"
+
+            docker save "${image}" -o "$tar_file"
+            gzip -c "$tar_file" > "$gz_file"
+            rm "$tar_file"
+
+            echo "✅ Saved $gz_file"
+          done
+
+      - name: List generated files
+        run: |
+          echo "📦 Generated files:"
+          find . -name "*.tar.gz" -print
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@master
+        with:
+          tag_name: DockerTarBuilder-AMD64
+          name: ${{ env.RELEASE_NAME }} for x86-64
+          body: |
+            [![Github](https://img.shields.io/badge/RELEASE:DockerTarBuilder-123456?logo=github&logoColor=fff&labelColor=green&style=for-the-badge)](https://www.bilibili.com/video/BV1EZ421M7mL) [![Github](https://img.shields.io/badge/国内加速站下载-FC7C0D?logo=github&logoColor=fff&labelColor=000&style=for-the-badge)](https://wkdaily.cpolar.top/archives/2025/04/10/docker-compose-mirror/)
+            ### 📦 这些镜像来自你的 `docker-compose.yml`，已打包为 AMD64 格式，适用于 Windows
+            - 使用方法：`docker load -i <filename>.tar.gz`
+            - 请确保你的 Docker Desktop 支持 Linux 容器模式
+          files: ${{ github.workspace }}/*.tar.gz
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Upload to GitHub Release
+        uses: actions/upload-release-asset@v1
+        with:
+          upload_url: ${{ steps.create_release.outputs.upload_url }}
+          asset_path: ${{ github.workspace }}/*.tar.gz
+          asset_name: ${{ github.event.inputs.compose_file_path }}-amd64.tar.gz
+          asset_content_type: application/gzip
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
