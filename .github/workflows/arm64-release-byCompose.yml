@@ -132,6 +132,7 @@ jobs:
           echo "RELEASE_NAME=$release_name" >> $GITHUB_ENV
 
       - name: Create GitHub Release
+        id: create_release
         uses: softprops/action-gh-release@master
         with:
           tag_name: DockerTarBuilder-AMD64
