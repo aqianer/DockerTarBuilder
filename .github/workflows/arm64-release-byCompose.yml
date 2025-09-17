@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       compose_file_path:
-        description: '请输入 docker-compose.yml 的路径（如：docker-compose.yml）'
+        description: '请输入 docker-compose 文件路径（如：docker-compose.yml 或 docker-compose.yaml）'
         required: true
         default: 'docker-compose.yml'
 
@@ -21,14 +21,47 @@ jobs:
           curl -sSLo /usr/local/bin/yq https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64
           chmod +x /usr/local/bin/yq
 
-      - name: Parse docker-compose.yml for images
+      - name: Find docker-compose file (support .yml and .yaml)
         run: |
           COMPOSE_FILE="${{ github.event.inputs.compose_file_path }}"
-          if [ ! -f "$COMPOSE_FILE" ]; then
-            echo "❌ Error: $COMPOSE_FILE not found!"
+          echo "🔍 Looking for docker-compose file at: $COMPOSE_FILE"
+
+          # 检查用户输入的文件是否存在
+          if [ -f "$COMPOSE_FILE" ]; then
+            echo "✅ Found: $COMPOSE_FILE"
+            echo "COMPOSE_FILE_PATH=$COMPOSE_FILE" >> $GITHUB_ENV
+            exit 0
+          fi
+
+          # 如果没找到，尝试自动搜索 .yml 和 .yaml
+          echo "⚠️ File not found. Searching for docker-compose.{yml,yaml}..."
+
+          # 使用 find 搜索两个后缀
+          found_file=$(find . -type f -name "docker-compose.yml" -o -name "docker-compose.yaml" | head -1)
+
+          if [ -n "$found_file" ]; then
+            echo "✅ Found: $found_file"
+            echo "COMPOSE_FILE_PATH=$found_file" >> $GITHUB_ENV
+            exit 0
+          else
+            echo "❌ Error: No docker-compose.yml or docker-compose.yaml found in the repository."
             exit 1
           fi
 
+      - name: Validate docker-compose file
+        run: |
+          COMPOSE_FILE="${COMPOSE_FILE_PATH}"
+          echo "🧪 Validating $COMPOSE_FILE..."
+          yq -e '.services' "$COMPOSE_FILE" >/dev/null 2>&1
+          if [ $? -ne 0 ]; then
+            echo "❌ Error: Invalid YAML or missing 'services' section."
+            exit 1
+          fi
+          echo "✅ Validation passed."
+
+      - name: Parse docker-compose file for images
+        run: |
+          COMPOSE_FILE="${COMPOSE_FILE_PATH}"
           echo "🔍 Parsing images from $COMPOSE_FILE..."
           images=$(yq -r '.services | to_entries[] | select(.value.image != null) | .value.image' "$COMPOSE_FILE" | sort -u)
 
@@ -54,11 +87,13 @@ jobs:
               continue
             fi
 
+            # 构造文件名：替换 / 和 : 为 _
             image_name="${image//\//_}"
             image_name="${image_name//:/_}"
             tar_file="${image_name}-amd64.tar"
             gz_file="${tar_file}.gz"
 
+            # 保存镜像
             docker save "${image}" -o "$tar_file"
             gzip -c "$tar_file" > "$gz_file"
             rm "$tar_file"
@@ -66,10 +101,15 @@ jobs:
             echo "✅ Saved $gz_file"
           done
 
-      - name: List generated files
+      - name: List generated files (debug)
         run: |
           echo "📦 Generated files:"
           find . -name "*.tar.gz" -print
+
+      - name: Generate release name
+        run: |
+          release_name=$(TZ="Asia/Shanghai" date +'%Y-%m-%d %H:%M Build')
+          echo "RELEASE_NAME=$release_name" >> $GITHUB_ENV
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@master
@@ -78,14 +118,15 @@ jobs:
           name: ${{ env.RELEASE_NAME }} for x86-64
           body: |
             [![Github](https://img.shields.io/badge/RELEASE:DockerTarBuilder-123456?logo=github&logoColor=fff&labelColor=green&style=for-the-badge)](https://www.bilibili.com/video/BV1EZ421M7mL) [![Github](https://img.shields.io/badge/国内加速站下载-FC7C0D?logo=github&logoColor=fff&labelColor=000&style=for-the-badge)](https://wkdaily.cpolar.top/archives/2025/04/10/docker-compose-mirror/)
-            ### 📦 这些镜像来自你的 `docker-compose.yml`，已打包为 AMD64 格式，适用于 Windows
+            ### 📦 这些镜像来自你的 `docker-compose.yml` 或 `docker-compose.yaml`，已打包为 AMD64 格式，适用于 Windows
             - 使用方法：`docker load -i <filename>.tar.gz`
             - 请确保你的 Docker Desktop 支持 Linux 容器模式
-          files: ${{ github.workspace }}/*.tar.gz
+          draft: false
+          prerelease: false
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Upload to GitHub Release
+      - name: Upload Docker images as release assets
         uses: actions/upload-release-asset@v1
         with:
           upload_url: ${{ steps.create_release.outputs.upload_url }}
