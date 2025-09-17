@@ -1,12 +1,12 @@
-name: Get-AMD64-Docker-Images-Compose-Release
+name: Get-AMD64-Docker-Images-From-Compose
 
 on:
   workflow_dispatch:
     inputs:
       compose_file_path:
-        description: '请输入 docker-compose 文件路径（如：docker-compose.yml 或 docker-compose.yaml）'
+        description: '请输入 docker-compose 文件路径（例如：./docker-compose.yml）'
         required: true
-        default: 'docker-compose.yml'
+        default: './docker-compose.yml'
 
 jobs:
   pull_and_package:
@@ -15,133 +15,61 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Install yq for YAML parsing
-        run: |
-          sudo apt-get update && sudo apt-get install -y curl jq
-          curl -sSLo /usr/local/bin/yq https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64
-          chmod +x /usr/local/bin/yq
-
-      - name: Find docker-compose file (support .yml and .yaml)
+      - name: Extract Images from Docker Compose file
+        id: extract_images
         run: |
           COMPOSE_FILE="${{ github.event.inputs.compose_file_path }}"
-          echo "🔍 Looking for docker-compose file at: $COMPOSE_FILE"
-
-          # 检查用户输入的文件是否存在
-          if [ -f "$COMPOSE_FILE" ]; then
-            echo "✅ Found: $COMPOSE_FILE"
-            echo "COMPOSE_FILE_PATH=$COMPOSE_FILE" >> $GITHUB_ENV
-            exit 0
-          fi
-
-          # 如果没找到，尝试自动搜索 .yml 和 .yaml
-          echo "⚠️ File not found. Searching for docker-compose.{yml,yaml}..."
-
-          # 使用 find 搜索两个后缀
-          found_file=$(find . -type f -name "docker-compose.yml" -o -name "docker-compose.yaml" | head -1)
-
-          if [ -n "$found_file" ]; then
-            echo "✅ Found: $found_file"
-            echo "COMPOSE_FILE_PATH=$found_file" >> $GITHUB_ENV
-            exit 0
-          else
-            echo "❌ Error: No docker-compose.yml or docker-compose.yaml found in the repository."
+          if [[ ! -f "$COMPOSE_FILE" ]]; then
+            echo "Error: File not found at path $COMPOSE_FILE"
             exit 1
           fi
 
-      - name: Validate docker-compose file
-        run: |
-          COMPOSE_FILE="${COMPOSE_FILE_PATH}"
-          echo "🧪 Validating $COMPOSE_FILE..."
-          yq -e '.services' "$COMPOSE_FILE" >/dev/null 2>&1
-          if [ $? -ne 0 ]; then
-            echo "❌ Error: Invalid YAML or missing 'services' section."
+          # Install yq if not present
+          sudo wget https://github.com/mikefarah/yq/releases/download/v4.40.5/yq_linux_amd64 -O /usr/local/bin/yq
+          sudo chmod +x /usr/local/bin/y  # 注意这里应该是 yq 而不是 y
+          
+          # Read all image fields using yq
+          IMAGES=$(yq e '..|.image? | select(.)' "$COMPOSE_FILE" | tr '\n' ',' | sed 's/,$//')
+
+          if [ -z "$IMAGES" ]; then
+            echo "No images found in the compose file."
             exit 1
           fi
-          echo "✅ Validation passed."
 
-      - name: Parse docker-compose file for images (with safe filtering)
+          echo "Extracted images: $IMAGES"
+          echo "images=$IMAGES" >> $GITHUB_OUTPUT
+
+      - name: Pull Docker Images and Package
         run: |
-          COMPOSE_FILE="${COMPOSE_FILE_PATH}"
-          echo "🔍 Parsing images from $COMPOSE_FILE..."
-
-          # 使用 yq 提取所有 image 字段，但只保留不包含冒号的（或符合 Docker 镜像格式的）
-          # 我们使用正则表达式过滤：只保留形如 `xxx/xxx:tag` 或 `xxx:tag` 的合法镜像
-          # 注意：我们跳过包含 `:` 但不是镜像格式的（如 env 变量）
-
-          images=$(yq -r '
-            .services | to_entries[] | select(.value.image != null) |
-            .value.image | select(test("^[a-zA-Z0-9._-]+[/][a-zA-Z0-9._-]+[/]?[a-zA-Z0-9._-]*[:][a-zA-Z0-9._-]+$")) |
-            . as $img |
-            # 去除可能的 ${VAR:default} 格式（如 env 变量）
-            if $img | test("\\$\\{.*\\}") then
-              empty
-            else
-              $img
-            end
-          ' "$COMPOSE_FILE" | sort -u)
-
-          # 如果没有找到合法镜像
-          if [ -z "$images" ]; then
-            echo "⚠️ No valid images found in $COMPOSE_FILE"
-            exit 0
-          fi
-
-          # 输出日志
-          echo "📦 Found valid images:"
-          echo "$images" | tr ' ' '\n'
-
-          # 写入环境变量
-          echo "DOCKER_IMAGES=$images" >> $GITHUB_ENV
-
-
-      - name: Pull Docker Images and Package (AMD64)
-        run: |
-          images="${DOCKER_IMAGES}"
+          images="${{ steps.extract_images.outputs.images }}"
           IFS=',' read -r -a image_array <<< "$images"
-
           for image in "${image_array[@]}"; do
-            echo "📥 Pulling $image for linux/amd64..."
             docker pull "${image}" --platform "linux/amd64"
-            if [ $? -ne 0 ]; then
-              echo "⚠️ Failed to pull $image. Skipping..."
-              continue
-            fi
-
-            # 构造文件名：替换 / 和 : 为 _
             image_name="${image//\//_}"
             image_name="${image_name//:/_}"
-            tar_file="${image_name}-amd64.tar"
-            gz_file="${tar_file}.gz"
-
-            # 保存镜像
-            docker save "${image}" -o "$tar_file"
-            gzip -c "$tar_file" > "$gz_file"
-            rm "$tar_file"
-
-            echo "✅ Saved $gz_file"
+            docker save "${image}" -o "${image_name}-amd64.tar"
+            gzip -c "${image_name}-amd64.tar" > "${image_name}-amd64.tar.gz"
+            rm "${image_name}-amd64.tar"
           done
 
-      - name: List generated files (debug)
+      - name: List generated files (debug step)
         run: |
-          echo "📦 Generated files:"
-          find . -name "*.tar.gz" -print
-
-      - name: Generate release name
-        run: |
+          echo "Preparing docker images list (.tar.gz) files:"
+          find $GITHUB_WORKSPACE -name "*.tar.gz"
           release_name=$(TZ="Asia/Shanghai" date +'%Y-%m-%d %H:%M Build')
           echo "RELEASE_NAME=$release_name" >> $GITHUB_ENV
 
       - name: Create GitHub Release
-        id: create_release
         uses: softprops/action-gh-release@master
         with:
           tag_name: DockerTarBuilder-AMD64
           name: ${{ env.RELEASE_NAME }} for x86-64
           body: |
-            [![Github](https://img.shields.io/badge/RELEASE:DockerTarBuilder-123456?logo=github&logoColor=fff&labelColor=green&style=for-the-badge)](https://www.bilibili.com/video/BV1EZ421M7mL) [![Github](https://img.shields.io/badge/国内加速站下载-FC7C0D?logo=github&logoColor=fff&labelColor=000&style=for-the-badge)](https://wkdaily.cpolar.top/archives/2025/04/10/docker-compose-mirror/)
-            ### 📦 这些镜像来自你的 `docker-compose.yml` 或 `docker-compose.yaml`，已打包为 AMD64 格式，适用于 Windows
-            - 使用方法：`docker load -i <filename>.tar.gz`
-            - 请确保你的 Docker Desktop 支持 Linux 容器模式
+            [![Github](https://img.shields.io/badge/RELEASE:DockerTarBuilder-123456?logo=github&logoColor=fff&labelColor=green&style=for-the-badge)](https://www.bilibili.com/video/BV1EZ421M7mL) [![Github](https://img.shields.io/badge/国内加速站下载-FC7C0D?logo=github&logoColor=fff&labelColor=000&style=for-the-badge)](https://wkdaily.cpolar.top/archives/1)
+            ### How to use? For example
+            `docker load -i alpine_latest.tar.gz `
+            ### Video teaching
+            [![Bilibili](https://img.shields.io/badge/Bilibili-123456?logo=bilibili&logoColor=fff&labelColor=fb7299)](https://www.bilibili.com/video/BV1yyq6YREdF)
           draft: false
           prerelease: false
         env:
