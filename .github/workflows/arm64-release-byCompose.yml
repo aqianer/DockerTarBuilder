@@ -59,20 +59,40 @@ jobs:
           fi
           echo "✅ Validation passed."
 
-      - name: Parse docker-compose file for images
+      - name: Parse docker-compose file for images (with safe filtering)
         run: |
           COMPOSE_FILE="${COMPOSE_FILE_PATH}"
           echo "🔍 Parsing images from $COMPOSE_FILE..."
-          images=$(yq -r '.services | to_entries[] | select(.value.image != null) | .value.image' "$COMPOSE_FILE" | sort -u)
 
+          # 使用 yq 提取所有 image 字段，但只保留不包含冒号的（或符合 Docker 镜像格式的）
+          # 我们使用正则表达式过滤：只保留形如 `xxx/xxx:tag` 或 `xxx:tag` 的合法镜像
+          # 注意：我们跳过包含 `:` 但不是镜像格式的（如 env 变量）
+
+          images=$(yq -r '
+            .services | to_entries[] | select(.value.image != null) |
+            .value.image | select(test("^[a-zA-Z0-9._-]+[/][a-zA-Z0-9._-]+[/]?[a-zA-Z0-9._-]*[:][a-zA-Z0-9._-]+$")) |
+            . as $img | 
+            # 去除可能的 ${VAR:default} 格式（如 env 变量）
+            if $img | test("\\$\\{.*\\}") then
+              empty
+            else
+              $img
+            end
+          ' "$COMPOSE_FILE" | sort -u)
+
+          # 如果没有找到合法镜像
           if [ -z "$images" ]; then
-            echo "⚠️ No images found in $COMPOSE_FILE"
+            echo "⚠️ No valid images found in $COMPOSE_FILE"
             exit 0
           fi
 
-          echo "DOCKER_IMAGES=$images" >> $GITHUB_ENV
-          echo "📦 Found images:"
+          # 输出日志
+          echo "📦 Found valid images:"
           echo "$images" | tr ' ' '\n'
+
+          # 写入环境变量
+          echo "DOCKER_IMAGES=$images" >> $GITHUB_ENV
+
 
       - name: Pull Docker Images and Package (AMD64)
         run: |
