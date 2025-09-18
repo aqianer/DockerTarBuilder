@@ -17,7 +17,7 @@ jobs:
         uses: actions/checkout@v4
 
       # 🔍 Step 1: Debug - Inspect raw input with hex dump
-      - name: 🔍 Debug: Inspect raw INPUT_WHEEL_NAMES (with hex dump)
+      - name:  Inspect raw INPUT_WHEEL_NAMES (with hex dump)
         run: |
           echo "=== RAW INPUT (hex): ==="
           echo -n "$INPUT_WHEEL_NAMES" | xxd
