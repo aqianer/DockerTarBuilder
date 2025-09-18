@@ -32,41 +32,46 @@ jobs:
           python -m pip install --upgrade pip
           pip install pip-tools
 
-      - name: Prepare wheel list (convert .whl to package==version)
+      - name: Prepare wheel list (robust version)
         id: parse_wheels
         run: |
-          input="$INPUT_WHEEL_NAMES"
+          # 获取输入并清理
+          input=$(echo "$INPUT_WHEEL_NAMES" | tr -d '\n\r' | xargs)  # 去除换行、回车、首尾空格
           wheels=()
 
-          # 分割输入
+          # 分割（支持逗号分隔，允许空格）
           IFS=',' read -ra WHEEL_ARRAY <<< "$input"
 
           for wheel in "${WHEEL_ARRAY[@]}"; do
-            wheel=$(echo "$wheel" | xargs)  # 去除首尾空格
+            wheel=$(echo "$wheel" | xargs)  # 去除前后空格
             if [[ -z "$wheel" ]]; then
               continue
             fi
 
-            # 正则匹配: <package>-<version>[-...].whl
-            if [[ "$wheel" =~ ^([a-zA-Z0-9_-]+)-([0-9]+\.[0-9]+\.[0-9]+) ]]; then
+            # 更强的正则：匹配 package-version 结构，忽略后面的 cpXXX、manylinux 等
+            if [[ "$wheel" =~ ^([a-zA-Z0-9_-]+)-([0-9]+\.[0-9]+\.[0-9]+)(?:-[a-zA-Z0-9_.]+)*\.whl$ ]]; then
               pkg_name="${BASH_REMATCH[1]}"
               version="${BASH_REMATCH[2]}"
               wheels+=("$pkg_name==$version")
               echo "✅ Matched: $wheel → $pkg_name==$version"
             else
               echo "❌ Failed to parse: $wheel"
+              echo "  Hint: Expected format: package-version-cpXX-...whl"
             fi
           done
 
-          # 输出最终列表
+          # 检查是否有有效 wheel
           if [ ${#wheels[@]} -eq 0 ]; then
-            echo "⚠️  No valid wheel names found."
+            echo "⚠️  No valid wheel names found after parsing."
+            echo "  Please check your input format and ensure it's comma-separated."
+            echo "  Example: watchdog-6.0.0-cp39-cp39-manylinux2014_x86_64.whl,requests-2.31.0-py3-none-any.whl"
             exit 1
           fi
 
-          # 写入环境变量
+          # 输出到环境变量
           echo "WHEELS=$(printf '%s ' "${wheels[@]}")" >> $GITHUB_ENV
-          echo "🔍 Downloading: $WHEELS"
+          echo "🔍 Final packages to download: $WHEELS"
+
 
       - name: Create wheels directory
         run: mkdir -p ./wheels
