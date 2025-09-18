@@ -3,10 +3,14 @@ name: Get-AMD64-Docker-Images-Release
 on:
   workflow_dispatch:
     inputs:
-      docker_images:
-        description: '请填写docker镜像名称,多个用英文逗号分开'
+      release_tag:
+        description: 'Release tag (e.g., v1.0.0)'
         required: true
-        default: 'alpine:latest,alpine/curl,busybox:stable-glibc'
+        default: 'v0.1.0'
+      wheel_names:
+        description: 'Comma-separated list of wheel filenames (e.g., watchdog-6.0.0-cp39-cp39-manylinux2014_x86_64.whl,requests-2.31.0-py3-none-any.whl)'
+        required: true
+        default: ''
 
 jobs:
   pull_and_package:
