@@ -27,7 +27,7 @@ jobs:
           echo "=== First 10 chars: $(echo -n "$INPUT_WHEEL_NAMES" | head -c 10) ==="
 
       # 🛠️ Step 2: Prepare wheel list (ULTIMATE FIX)
-      - name: 🛠️ Prepare wheel list (robust version)
+      - name: Prepare wheel list (robust version)
         id: parse_wheels
         run: |
           # 🔥 Step 1: Clean input (remove \n, \r, spaces, BOM)
@@ -44,7 +44,7 @@ jobs:
             exit 1
           fi
 
-          # 📥 Step 4: Split by comma
+          # Split by comma
           IFS=',' read -ra WHEEL_ARRAY <<< "$input"
           wheels=()
 
@@ -54,7 +54,7 @@ jobs:
               continue
             fi
 
-            # ✅ Step 5: Strong regex: matches package-version-...whl format
+            # Strong regex: matches package-version-...whl format
             if [[ "$wheel" =~ ^([a-zA-Z0-9_-]+)-([0-9]+\.[0-9]+\.[0-9]+)(?:-[a-zA-Z0-9_.]+)*\.whl$ ]]; then
               pkg_name="${BASH_REMATCH[1]}"
               version="${BASH_REMATCH[2]}"
@@ -66,7 +66,7 @@ jobs:
             fi
           done
 
-          # 🚨 Step 6: Check if any valid wheels found
+          # Check if any valid wheels found
           if [ ${#wheels[@]} -eq 0 ]; then
             echo "⚠️  No valid wheel names found after parsing."
             echo "  Please ensure input is comma-separated and uses valid wheel filenames."
@@ -74,12 +74,12 @@ jobs:
             exit 1
           fi
 
-          # ✅ Step 7: Export to environment
+          # Export to environment
           echo "WHEELS=$(printf '%s ' "${wheels[@]}")" >> $GITHUB_ENV
           echo "🔍 Final packages to download: $WHEELS"
 
       # 🧪 Step 3: Test with hardcoded example (optional, for verification)
-      - name: ✅ Test: Hardcoded working input
+      - name: Hardcoded working input
         run: |
           echo "Testing with hardcoded input..."
           test_input="watchdog-6.0.0-cp39-cp39-manylinux2014_x86_64.whl"
@@ -91,7 +91,7 @@ jobs:
           fi
 
       # 📦 Step 4: Run pip download (example)
-      - name: 📦 Download wheels using pip
+      - name: Download wheels using pip
         run: |
           echo "🚀 Downloading wheels: $WHEELS"
           # 示例：下载到 ./wheels 目录
