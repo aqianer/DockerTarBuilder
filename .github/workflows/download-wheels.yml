@@ -1,0 +1,130 @@
+name: Download Wheels to GitHub Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: 'Release tag (e.g., v1.0.0)'
+        required: true
+        default: 'v0.1.0'
+      wheel_names:
+        description: 'Comma-separated list of wheel filenames (e.g., watchdog-6.0.0-cp39-cp39-manylinux2014_x86_64.whl,requests-2.31.0-py3-none-any.whl)'
+        required: true
+      github_token:
+        description: 'GitHub token with repo permissions'
+        required: true
+        # 会自动传入 secrets.GITHUB_TOKEN
+
+jobs:
+  download-and-upload:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.9'
+
+      - name: Install pip-tools (for pip download)
+        run: |
+          python -m pip install --upgrade pip
+          pip install pip-tools
+
+      - name: Prepare wheel list
+        id: parse_wheels
+        run: |
+          echo "WHEELS=$(echo '${{ inputs.wheel_names }}' | tr ',' '\n' | xargs -I {} echo \"{}\" | paste -sd ' ' -)" >> $GITHUB_ENV
+
+      - name: Download wheels using pip download
+        run: |
+          echo "Downloading wheels..."
+          echo "${{ env.WHEELS }}" | xargs pip download --dest ./wheels --no-deps
+
+          # 列出下载的文件（调试用）
+          ls -la wheels/
+
+      - name: Create release or upload assets
+        id: create_release
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const { execSync } = require('child_process');
+            const fs = require('fs');
+            const path = require('path');
+
+            const releaseTag = '${{ inputs.release_tag }}';
+            const wheelDir = './wheels';
+            const assets = [];
+
+            // 获取所有 .whl 文件
+            if (fs.existsSync(wheelDir)) {
+              const files = fs.readdirSync(wheelDir).filter(f => f.endsWith('.whl'));
+              files.forEach(file => {
+                assets.push(path.join(wheelDir, file));
+              });
+            }
+
+            if (assets.length === 0) {
+              console.log('❌ No wheel files found to upload.');
+              return;
+            }
+
+            // 检查 release 是否已存在
+            const octokit = github.rest;
+            try {
+              const response = await octokit.repos.getReleaseByTag({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                tag: releaseTag
+              });
+              console.log(`✅ Release ${releaseTag} already exists.`);
+              // 上传附件
+              for (const assetPath of assets) {
+                const fileName = path.basename(assetPath);
+                console.log(`📤 Uploading ${fileName}...`);
+                await octokit.repos.uploadReleaseAsset({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  release_id: response.data.id,
+                  name: fileName,
+                  data: fs.readFileSync(assetPath)
+                });
+              }
+            } catch (error) {
+              if (error.status === 404) {
+                console.log(`🆕 Creating new release: ${releaseTag}`);
+                const newRelease = await octokit.repos.createRelease({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  tag_name: releaseTag,
+                  name: releaseTag,
+                  draft: false,
+                  prerelease: false
+                });
+
+                for (const assetPath of assets) {
+                  const fileName = path.basename(assetPath);
+                  console.log(`📤 Uploading ${fileName}...`);
+                  await octokit.repos.uploadReleaseAsset({
+                    owner: context.repo.owner,
+                    repo: context.repo.repo,
+                    release_id: newRelease.data.id,
+                    name: fileName,
+                    data: fs.readFileSync(assetPath)
+                  });
+                }
+              } else {
+                throw error;
+              }
+            }
+
+            console.log(`✅ All wheels uploaded successfully to release ${releaseTag}.`);
+
+      - name: Finalize
+        run: |
+          echo "🎉 Workflow completed. Wheels are now in GitHub Release: ${{ inputs.release_tag }}"
