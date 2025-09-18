@@ -10,10 +10,8 @@ on:
       wheel_names:
         description: 'Comma-separated list of wheel filenames (e.g., watchdog-6.0.0-cp39-cp39-manylinux2014_x86_64.whl,requests-2.31.0-py3-none-any.whl)'
         required: true
-      github_token:
-        description: 'GitHub token with repo permissions'
-        required: true
-        # 会自动传入 secrets.GITHUB_TOKEN
+        default: ''
+
 
 jobs:
   download-and-upload:
