@@ -1,54 +1,60 @@
-name: Download Wheels (Auto-Resolve)
+name: Download Wheels (Robust Version)
 
 on:
   workflow_dispatch:
     inputs:
-      release_tag:
-        description: 'Release tag (e.g., v1.0.0)'
+      WHEEL_NAMES:
+        description: "Comma-separated list of wheel filenames (e.g. watchdog-6.0.0-cp39-cp39-manylinux2014_x86_64.whl,requests-2.31.0-py3-none-any.whl)"
         required: true
-        default: 'v0.1.0'
-      wheel_names:
-        description: |
-          Comma-separated list of wheel filenames (e.g.,
-          watchdog-6.0.0-cp39-cp39-manylinux2014_x86_64.whl,
-          requests-2.31.0-py3-none-any.whl)
-        required: true
-        default: ''
+        default: "watchdog-6.0.0-cp39-cp39-manylinux2014_x86_64.whl"
+        type: string
 
 jobs:
-  download-wheels:
+  download_wheels:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout code
+      - name: 📥 Checkout code
         uses: actions/checkout@v4
 
-      - name: Set up Python
-        uses: actions/setup-python@v4
-        with:
-          python-version: '3.9'
-
-      - name: Install pip-tools (for pip download)
+      # 🔍 Step 1: Debug - Inspect raw input with hex dump
+      - name: 🔍 Debug: Inspect raw INPUT_WHEEL_NAMES (with hex dump)
         run: |
-          python -m pip install --upgrade pip
-          pip install pip-tools
+          echo "=== RAW INPUT (hex): ==="
+          echo -n "$INPUT_WHEEL_NAMES" | xxd
+          echo ""
+          echo "=== Length: $(echo -n "$INPUT_WHEEL_NAMES" | wc -c) characters ==="
+          echo "=== Is empty? $( [ -z "$INPUT_WHEEL_NAMES" ] && echo yes || echo no ) ==="
+          echo "=== First 10 chars: $(echo -n "$INPUT_WHEEL_NAMES" | head -c 10) ==="
 
-      - name: Prepare wheel list (robust version)
+      # 🛠️ Step 2: Prepare wheel list (ULTIMATE FIX)
+      - name: 🛠️ Prepare wheel list (robust version)
         id: parse_wheels
         run: |
-          # 获取输入并清理
-          input=$(echo "$INPUT_WHEEL_NAMES" | tr -d '\n\r' | xargs)  # 去除换行、回车、首尾空格
+          # 🔥 Step 1: Clean input (remove \n, \r, spaces, BOM)
+          input=$(echo "$INPUT_WHEEL_NAMES" | tr -d '\n\r' | xargs)
+
+          # 🔍 Step 2: Debug cleaned input
+          echo "🔍 Cleaned input: '$input'"
+          echo "🔍 Cleaned length: $(echo -n "$input" | wc -c)"
+
+          # ❌ Step 3: If empty after cleanup, fail early
+          if [ -z "$input" ]; then
+            echo "❌ Input is empty after cleanup!"
+            echo "  Please check your workflow_dispatch input — no valid characters found."
+            exit 1
+          fi
+
+          # 📥 Step 4: Split by comma
+          IFS=',' read -ra WHEEL_ARRAY <<< "$input"
           wheels=()
 
-          # 分割（支持逗号分隔，允许空格）
-          IFS=',' read -ra WHEEL_ARRAY <<< "$input"
-
           for wheel in "${WHEEL_ARRAY[@]}"; do
-            wheel=$(echo "$wheel" | xargs)  # 去除前后空格
+            wheel=$(echo "$wheel" | xargs)  # Remove extra spaces
             if [[ -z "$wheel" ]]; then
               continue
             fi
 
-            # 更强的正则：匹配 package-version 结构，忽略后面的 cpXXX、manylinux 等
+            # ✅ Step 5: Strong regex: matches package-version-...whl format
             if [[ "$wheel" =~ ^([a-zA-Z0-9_-]+)-([0-9]+\.[0-9]+\.[0-9]+)(?:-[a-zA-Z0-9_.]+)*\.whl$ ]]; then
               pkg_name="${BASH_REMATCH[1]}"
               version="${BASH_REMATCH[2]}"
@@ -56,93 +62,46 @@ jobs:
               echo "✅ Matched: $wheel → $pkg_name==$version"
             else
               echo "❌ Failed to parse: $wheel"
-              echo "  Hint: Expected format: package-version-cpXX-...whl"
+              echo "  Hint: Must be like: package-version-cpXX-...whl"
             fi
           done
 
-          # 检查是否有有效 wheel
+          # 🚨 Step 6: Check if any valid wheels found
           if [ ${#wheels[@]} -eq 0 ]; then
             echo "⚠️  No valid wheel names found after parsing."
-            echo "  Please check your input format and ensure it's comma-separated."
+            echo "  Please ensure input is comma-separated and uses valid wheel filenames."
             echo "  Example: watchdog-6.0.0-cp39-cp39-manylinux2014_x86_64.whl,requests-2.31.0-py3-none-any.whl"
             exit 1
           fi
 
-          # 输出到环境变量
+          # ✅ Step 7: Export to environment
           echo "WHEELS=$(printf '%s ' "${wheels[@]}")" >> $GITHUB_ENV
           echo "🔍 Final packages to download: $WHEELS"
 
-
-      - name: Create wheels directory
-        run: mkdir -p ./wheels
-
-      - name: Download wheels using pip download
+      # 🧪 Step 3: Test with hardcoded example (optional, for verification)
+      - name: ✅ Test: Hardcoded working input
         run: |
-          echo "🚀 Starting pip download..."
-          echo "Packages to download: $WHEELS"
-          echo "$WHEELS" | xargs -I {} sh -c 'pip download --dest ./wheels --no-deps {}'
-          echo "✅ All wheels downloaded to ./wheels/"
+          echo "Testing with hardcoded input..."
+          test_input="watchdog-6.0.0-cp39-cp39-manylinux2014_x86_64.whl"
+          if [[ "$test_input" =~ ^([a-zA-Z0-9_-]+)-([0-9]+\.[0-9]+\.[0-9]+)(?:-[a-zA-Z0-9_.]+)*\.whl$ ]]; then
+            echo "✅ PASS: Hardcoded input matches!"
+          else
+            echo "❌ FAIL: Hardcoded input does NOT match!"
+            exit 1
+          fi
 
-      - name: List downloaded wheels
+      # 📦 Step 4: Run pip download (example)
+      - name: 📦 Download wheels using pip
         run: |
-          echo "📁 Contents of ./wheels:"
-          ls -la ./wheels/
+          echo "🚀 Downloading wheels: $WHEELS"
+          # 示例：下载到 ./wheels 目录
+          pip download $WHEELS -d ./wheels --no-deps
+          echo "✅ Wheels downloaded to ./wheels/"
 
-      - name: Upload wheels as artifact
+      # 📤 Step 5: Upload wheels (optional)
+      - name: 📤 Upload wheels
         uses: actions/upload-artifact@v4
         with:
-          name: wheels-${{ inputs.release_tag }}
+          name: wheels-artifact
           path: ./wheels/
           if-no-files-found: ignore
-
-      - name: Create GitHub Release
-        id: create_release
-        uses: actions/github-script@v7
-        with:
-          script: |
-            const fs = require('fs');
-            const path = require('path');
-
-            // 读取下载的 wheel 文件
-            const wheelDir = './wheels';
-            const files = fs.readdirSync(wheelDir).filter(file => file.endsWith('.whl'));
-
-            if (files.length === 0) {
-              console.log('⚠️  No wheel files found to upload.');
-              return;
-            }
-
-            const releaseTag = process.env.RELEASE_TAG || context.ref.replace('refs/tags/', '');
-            const releaseName = `Release ${releaseTag}`;
-
-            const { data: release } = await github.rest.repos.createRelease({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              tag_name: releaseTag,
-              name: releaseName,
-              body: `Automated release with wheels for ${files.join(', ')}.`,
-              draft: false,
-              prerelease: false,
-            });
-
-            console.log(`✅ Release created: ${release.html_url}`);
-
-            // 上传每个 wheel 文件
-            for (const file of files) {
-              const filePath = path.join(wheelDir, file);
-              const fileContent = fs.readFileSync(filePath);
-
-              await github.rest.repos.uploadReleaseAsset({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                release_id: release.id,
-                name: file,
-                data: fileContent,
-              });
-              console.log(`📤 Uploaded: ${file}`);
-            }
-
-      - name: Print success message
-        run: |
-          echo "🎉 Workflow completed successfully!"
-          echo "📦 Wheels uploaded to release: ${{ steps.create_release.outputs.url }}"
