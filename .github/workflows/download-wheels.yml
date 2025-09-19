@@ -1,107 +1,71 @@
-name: Download Wheels (Robust Version)
-
+name: 下载Python依赖Whl并上传Release
 on:
+  # 支持手动触发（可自定义输入参数）
   workflow_dispatch:
     inputs:
-      WHEEL_NAMES:
-        description: "Comma-separated list of wheel filenames (e.g. watchdog-6.0.0-cp39-cp39-manylinux2014_x86_64.whl,requests-2.31.0-py3-none-any.whl)"
+      requirementsPath:
+        description: 'requirements.txt文件路径（如：./requirements.txt）'
         required: true
-        default: "watchdog-6.0.0-cp39-cp39-manylinux2014_x86_64.whl"
-        type: string
+        default: './requirements.txt'
+      releaseVersion:
+        description: 'Release版本号（如：v1.0.0）'
+        required: true
+        default: 'v1.0.0'
+      pythonVersion:
+        description: 'requirements.txt对应的python版本'
+        required: false
+        default: '3.11'
+  # 可选：推代码时自动触发（需删除inputs，固定路径和版本）
+  # push:
+  #   branches: [ main ]
 
 jobs:
-  download_wheels:
+  build-and-upload:
     runs-on: ubuntu-latest
     steps:
-      - name: 📥 Checkout code
+      # 1. 拉取当前仓库代码（获取requirements.txt）
+      - name: 检出代码
         uses: actions/checkout@v4
 
-      # 🔍 Step 1: Debug - Inspect raw input with hex dump
-      - name:  Inspect raw INPUT_WHEEL_NAMES (with hex dump)
-        run: |
-          echo "=== RAW INPUT (hex): ==="
-          echo -n "$INPUT_WHEEL_NAMES" | xxd
-          echo ""
-          echo "=== Length: $(echo -n "$INPUT_WHEEL_NAMES" | wc -c) characters ==="
-          echo "=== Is empty? $( [ -z "$INPUT_WHEEL_NAMES" ] && echo yes || echo no ) ==="
-          echo "=== First 10 chars: $(echo -n "$INPUT_WHEEL_NAMES" | head -c 10) ==="
-
-      # 🛠️ Step 2: Prepare wheel list (ULTIMATE FIX)
-      - name: Prepare wheel list (robust version)
-        id: parse_wheels
-        run: |
-          # 🔥 Step 1: Clean input (remove \n, \r, spaces, BOM)
-          input=$(echo "$INPUT_WHEEL_NAMES" | tr -d '\n\r' | xargs)
-
-          # 🔍 Step 2: Debug cleaned input
-          echo "🔍 Cleaned input: '$input'"
-          echo "🔍 Cleaned length: $(echo -n "$input" | wc -c)"
-
-          # ❌ Step 3: If empty after cleanup, fail early
-          if [ -z "$input" ]; then
-            echo "❌ Input is empty after cleanup!"
-            echo "  Please check your workflow_dispatch input — no valid characters found."
-            exit 1
-          fi
-
-          # Split by comma
-          IFS=',' read -ra WHEEL_ARRAY <<< "$input"
-          wheels=()
-
-          for wheel in "${WHEEL_ARRAY[@]}"; do
-            wheel=$(echo "$wheel" | xargs)  # Remove extra spaces
-            if [[ -z "$wheel" ]]; then
-              continue
-            fi
-
-            # Strong regex: matches package-version-...whl format
-            if [[ "$wheel" =~ ^([a-zA-Z0-9_-]+)-([0-9]+\.[0-9]+\.[0-9]+)(?:-[a-zA-Z0-9_.]+)*\.whl$ ]]; then
-              pkg_name="${BASH_REMATCH[1]}"
-              version="${BASH_REMATCH[2]}"
-              wheels+=("$pkg_name==$version")
-              echo "✅ Matched: $wheel → $pkg_name==$version"
-            else
-              echo "❌ Failed to parse: $wheel"
-              echo "  Hint: Must be like: package-version-cpXX-...whl"
-            fi
-          done
-
-          # Check if any valid wheels found
-          if [ ${#wheels[@]} -eq 0 ]; then
-            echo "⚠️  No valid wheel names found after parsing."
-            echo "  Please ensure input is comma-separated and uses valid wheel filenames."
-            echo "  Example: watchdog-6.0.0-cp39-cp39-manylinux2014_x86_64.whl,requests-2.31.0-py3-none-any.whl"
-            exit 1
-          fi
-
-          # Export to environment
-          echo "WHEELS=$(printf '%s ' "${wheels[@]}")" >> $GITHUB_ENV
-          echo "🔍 Final packages to download: $WHEELS"
-
-      # 🧪 Step 3: Test with hardcoded example (optional, for verification)
-      - name: Hardcoded working input
-        run: |
-          echo "Testing with hardcoded input..."
-          test_input="watchdog-6.0.0-cp39-cp39-manylinux2014_x86_64.whl"
-          if [[ "$test_input" =~ ^([a-zA-Z0-9_-]+)-([0-9]+\.[0-9]+\.[0-9]+)(?:-[a-zA-Z0-9_.]+)*\.whl$ ]]; then
-            echo "✅ PASS: Hardcoded input matches!"
-          else
-            echo "❌ FAIL: Hardcoded input does NOT match!"
-            exit 1
-          fi
-
-      # 📦 Step 4: Run pip download (example)
-      - name: Download wheels using pip
-        run: |
-          echo "🚀 Downloading wheels: $WHEELS"
-          # 示例：下载到 ./wheels 目录
-          pip download $WHEELS -d ./wheels --no-deps
-          echo "✅ Wheels downloaded to ./wheels/"
-
-      # 📤 Step 5: Upload wheels (optional)
-      - name: 📤 Upload wheels
-        uses: actions/upload-artifact@v4
+      # 2. 配置Python环境（匹配Docker构建时的Python版本）
+      - name: 设置Python
+        uses: actions/setup-python@v5
         with:
-          name: wheels-artifact
-          path: ./wheels/
-          if-no-files-found: ignore
+          python-version: ${{ github.event.inputs.pythonVersion }}  # 需改为你的Docker使用的Python版本
+
+      # 3. 下载requirements中的所有whl包到指定目录
+      - name: 下载Whl依赖
+        run: |
+          # 创建存放whl的目录
+          mkdir -p python-whls
+          # 用pip下载whl（--platform指定平台，避免版本不兼容）
+          pip download -r ${{ github.event.inputs.requirementsPath }} \
+            -d ./python-whls \
+            --platform manylinux2014_x86_64  # 需匹配Docker基础镜像的架构（如arm64改对应值）
+
+      # 4. 压缩whl目录（方便上传和下载）
+      - name: 压缩Whl文件
+        run: zip -r python-whls-${{ github.event.inputs.releaseVersion }}.zip ./python-whls
+
+      # 5. 创建GitHub Release（用于存储whl压缩包）
+      - name: 创建Release
+        id: create-release
+        uses: actions/create-release@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}  # 仓库默认密钥，无需额外配置
+        with:
+          tag_name: ${{ github.event.inputs.releaseVersion }}
+          release_name: Python Whl Packages ${{ github.event.inputs.releaseVersion }}
+          draft: false
+          prerelease: false
+
+      # 6. 上传压缩后的whl包到Release
+      - name: 上传Whl压缩包到Release
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ steps.create-release.outputs.upload_url }}
+          asset_path: ./python-whls-${{ github.event.inputs.releaseVersion }}.zip
+          asset_name: python-whls-${{ github.event.inputs.releaseVersion }}.zip
+          asset_content_type: application/zip
